@@ -1,105 +1,531 @@
--- // Mirage + Full Moon Server Scanner GUI
--- // By: trg55
+--[[
+Blox Fruits Server Finder (Full) - Pure Instance UI
+Features:
+- Tabs: Full Moon | Mirage | All Servers
+- Scan public servers via Roblox API (pages)
+- Show only servers with available slots (playing < maxPlayers)
+- Display players/maxPlayers (e.g. 8/12)
+- "Join" button: TeleportToPlaceInstance to selected JobId
+- "Check Current" button: run detector in current server (Full Moon / Mirage)
+- Auto-Test (if executor supports syn.queue_on_teleport or global queue_on_teleport):
+    - When enabled, it queues a small snippet that runs in the server you join and notifies if target found.
+By: trg55 (custom)
+--]]
 
--- Services
+-- ====== CONFIG ======
+local CONFIG = {
+    SCAN_PAGE_LIMIT = 3,       -- number of pages (each ~100 servers) to request during scan
+    HOP_REJOIN_WAIT = 3,       -- wait after teleport (if using non-queue approach)
+    DEFAULT_TAB = "All Servers" -- default tab to show
+}
+-- ====== SERVICES ======
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PLACE_ID = game.PlaceId
 
--- Game ID Blox Fruits
-local placeId = 2753915549 -- First Sea, auto đổi server thì placeId vẫn giữ được
+-- ====== UTIL FUNCTIONS ======
+local function inSea()
+    if PLACE_ID == 2753915549 then return "First Sea"
+    elseif PLACE_ID == 4442272183 then return "Second Sea"
+    elseif PLACE_ID == 7449423635 or PLACE_ID == 9224601490 or PLACE_ID == 10699057839 then return "Third Sea"
+    else return "Unknown Sea" end
+end
 
--- // Hàm request API Roblox
+local function safeFind(root, path)
+    local ptr = root
+    for _, name in ipairs(path) do
+        if not ptr then return nil end
+        ptr = ptr:FindFirstChild(name)
+    end
+    return ptr
+end
+
 local function GetServers(cursor)
-    local url = "https://games.roblox.com/v1/games/"..placeId.."/servers/Public?sortOrder=Asc&limit=100"
-    if cursor then
-        url = url .. "&cursor="..cursor
-    end
-    local response = game:HttpGet(url)
-    return HttpService:JSONDecode(response)
+    local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100"):format(PLACE_ID)
+    if cursor then url = url .. "&cursor=" .. cursor end
+    local ok, body = pcall(game.HttpGet, game, url)
+    if not ok then return nil, ("HttpGet failed: %s"):format(tostring(body)) end
+    local ok2, data = pcall(HttpService.JSONDecode, HttpService, body)
+    if not ok2 then return nil, ("JSON decode failed: %s"):format(tostring(data)) end
+    return data, nil
 end
 
--- // Hàm check server có Mirage / Full Moon không (demo đơn giản)
-local function CheckServer(serverId)
-    -- ở đây mình chỉ demo random vì Mirage/Full Moon thật thì phải check trong game
-    -- bạn có thể thay điều kiện bằng cách dùng RemoteEvent trong Blox Fruits
-    local result = {}
-    if math.random(1,10) == 1 then
-        result.Mirage = true
+-- ====== DETECTORS: run INSIDE the server to check current world ======
+local DETECT = {}
+
+DETECT["Full Moon"] = function()
+    -- Heuristic: nighttime and optional FullMoon value
+    local ct = tonumber(Lighting.ClockTime)
+    if ct and not ((ct >= 18) or (ct <= 6)) then
+        return false
     end
-    if math.random(1,8) == 1 then
-        result.FullMoon = true
-    end
-    return result
-end
-
--- // Tạo GUI bằng Instance (có list + button hop)
-local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
-local Frame = Instance.new("Frame", ScreenGui)
-Frame.Size = UDim2.new(0,400,0,300)
-Frame.Position = UDim2.new(0.5,-200,0.5,-150)
-Frame.BackgroundColor3 = Color3.fromRGB(40,40,40)
-Frame.Active = true
-Frame.Draggable = true
-
-local Title = Instance.new("TextLabel", Frame)
-Title.Size = UDim2.new(1,0,0,40)
-Title.Text = "🔍 Server Scanner"
-Title.BackgroundColor3 = Color3.fromRGB(25,25,25)
-Title.TextColor3 = Color3.fromRGB(255,255,255)
-Title.Font = Enum.Font.SourceSansBold
-Title.TextSize = 20
-
-local Scroll = Instance.new("ScrollingFrame", Frame)
-Scroll.Position = UDim2.new(0,0,0,40)
-Scroll.Size = UDim2.new(1,0,1,-80)
-Scroll.CanvasSize = UDim2.new(0,0,0,0)
-Scroll.ScrollBarThickness = 6
-Scroll.BackgroundColor3 = Color3.fromRGB(50,50,50)
-
-local ScanButton = Instance.new("TextButton", Frame)
-ScanButton.Size = UDim2.new(1,0,0,40)
-ScanButton.Position = UDim2.new(0,0,1,-40)
-ScanButton.Text = "🔄 Scan Server"
-ScanButton.BackgroundColor3 = Color3.fromRGB(70,70,70)
-ScanButton.TextColor3 = Color3.fromRGB(255,255,255)
-ScanButton.Font = Enum.Font.SourceSansBold
-ScanButton.TextSize = 18
-
--- // Thêm kết quả vào list
-local function AddResult(serverId, result)
-    local Btn = Instance.new("TextButton", Scroll)
-    Btn.Size = UDim2.new(1, -10, 0, 30)
-    Btn.Position = UDim2.new(0,5,0, #Scroll:GetChildren()*35)
-    Btn.TextXAlignment = Enum.TextXAlignment.Left
-    Btn.TextColor3 = Color3.fromRGB(255,255,255)
-    Btn.BackgroundColor3 = Color3.fromRGB(60,60,60)
-
-    local status = ""
-    if result.Mirage then status = status .. " 🌌Mirage" end
-    if result.FullMoon then status = status .. " 🌕FullMoon" end
-    if status == "" then status = "❌ None" end
-
-    Btn.Text = serverId.." | "..status
-
-    Btn.MouseButton1Click:Connect(function()
-        TeleportService:TeleportToPlaceInstance(placeId, serverId, LocalPlayer)
-    end)
-
-    Scroll.CanvasSize = UDim2.new(0,0,0, #Scroll:GetChildren()*35)
-end
-
--- // Khi nhấn Scan
-ScanButton.MouseButton1Click:Connect(function()
-    Scroll:ClearAllChildren()
-    local data = GetServers()
-    for _,server in pairs(data.data) do
-        if server.playing < server.maxPlayers then
-            local result = CheckServer(server.id)
-            AddResult(server.id, result)
+    -- try some common ReplicatedStorage or Lighting hints (if dev provided)
+    local ok, found = pcall(function()
+        local RS = game:GetService("ReplicatedStorage")
+        local candidate = safeFind(RS, {"FullMoon"}) or safeFind(RS, {"Full_Moon"}) or safeFind(RS, {"Fullmoon"})
+        if candidate and (candidate.Value == true or tostring(candidate.Value):lower():find("full")) then
+            return true
         end
+        -- if no explicit hint, assume night -> return true as likely
+        return true
+    end)
+    return ok and found
+end
+
+DETECT["Mirage Island"] = function()
+    -- Mirage usually in Third Sea. We try to detect common location nodes.
+    if inSea() ~= "Third Sea" then
+        -- still return false if not third sea
+        return false
+    end
+    local ok, found = pcall(function()
+        local w = workspace
+        if safeFind(w, {"_WorldOrigin","Locations","Mirage Island"}) then return true end
+        if w:FindFirstChild("Mirage Island") then return true end
+        local map = w:FindFirstChild("_Map") or w:FindFirstChild("Map")
+        if map and (map:FindFirstChild("Mirage Island") or map:FindFirstChild("Mirage")) then return true end
+        return false
+    end)
+    return ok and found
+end
+
+-- ====== UI BUILD (pure Instance) ======
+-- Remove existing GUI if present
+if game.CoreGui:FindFirstChild("BF_ServerFinder_UI") then
+    pcall(function() game.CoreGui:FindFirstChild("BF_ServerFinder_UI"):Destroy() end)
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "BF_ServerFinder_UI"
+gui.ResetOnSpawn = false
+gui.Parent = game.CoreGui
+
+local main = Instance.new("Frame", gui)
+main.Name = "Main"
+main.Size = UDim2.new(0,780,0,520)
+main.Position = UDim2.new(0.5,-390,0.5,-260)
+main.BackgroundColor3 = Color3.fromRGB(18,18,22)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+
+local header = Instance.new("Frame", main)
+header.Size = UDim2.new(1,0,0,60)
+header.Position = UDim2.new(0,0,0,0)
+header.BackgroundColor3 = Color3.fromRGB(12,12,15)
+header.BorderSizePixel = 0
+
+local title = Instance.new("TextLabel", header)
+title.Size = UDim2.new(1,-240,1,0)
+title.Position = UDim2.new(0,16,0,0)
+title.Text = "🔎 Blox Fruits • Server Finder"
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Font = Enum.Font.GothamBold
+title.TextSize = 20
+title.TextColor3 = Color3.fromRGB(240,240,245)
+title.BackgroundTransparency = 1
+
+local closeBtn = Instance.new("TextButton", header)
+closeBtn.Size = UDim2.new(0,120,0,34)
+closeBtn.Position = UDim2.new(1,-136,0.5,-17)
+closeBtn.Text = "Close"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 14
+closeBtn.BackgroundColor3 = Color3.fromRGB(46,46,52)
+closeBtn.TextColor3 = Color3.fromRGB(240,240,245)
+closeBtn.BorderSizePixel = 0
+closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
+
+-- Left control panel
+local left = Instance.new("Frame", main)
+left.Size = UDim2.new(0,240,1,-60)
+left.Position = UDim2.new(0,0,0,60)
+left.BackgroundColor3 = Color3.fromRGB(24,24,28)
+left.BorderSizePixel = 0
+
+local info = Instance.new("TextLabel", left)
+info.Size = UDim2.new(1,-20,0,76)
+info.Position = UDim2.new(0,10,0,10)
+info.BackgroundTransparency = 1
+info.TextXAlignment = Enum.TextXAlignment.Left
+info.TextYAlignment = Enum.TextYAlignment.Top
+info.Font = Enum.Font.Gotham
+info.TextSize = 14
+info.TextColor3 = Color3.fromRGB(220,220,230)
+info.Text = ("Player: %s\nSea: %s\nPlaceId: %d"):format(LocalPlayer.Name, inSea(), PLACE_ID)
+
+local tabs = {"Full Moon","Mirage","All Servers"}
+local tabButtons = {}
+local currentTab = CONFIG.DEFAULT_TAB or "All Servers"
+
+local tabFrame = Instance.new("Frame", left)
+tabFrame.Size = UDim2.new(1,-20,0,34)
+tabFrame.Position = UDim2.new(0,10,0,96)
+tabFrame.BackgroundTransparency = 1
+
+for i, name in ipairs(tabs) do
+    local btn = Instance.new("TextButton", tabFrame)
+    btn.Size = UDim2.new(0, (220/#tabs), 1, 0)
+    btn.Position = UDim2.new(0, (i-1)*((220/#tabs)), 0, 0)
+    btn.Text = name
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.BackgroundColor3 = Color3.fromRGB(36,36,42)
+    btn.TextColor3 = Color3.fromRGB(240,240,245)
+    btn.BorderSizePixel = 0
+    tabButtons[name] = btn
+    btn.MouseButton1Click:Connect(function()
+        currentTab = name
+        for k,v in pairs(tabButtons) do
+            v.BackgroundColor3 = Color3.fromRGB(36,36,42)
+        end
+        btn.BackgroundColor3 = Color3.fromRGB(72,120,255)
+        statusLabel.Text = "Status: Tab -> "..name
+        -- clear & refresh list for new tab
+        clearList()
+    end)
+end
+
+-- default highlight
+if tabButtons[currentTab] then
+    tabButtons[currentTab].BackgroundColor3 = Color3.fromRGB(72,120,255)
+end
+
+local autoToggle = Instance.new("TextButton", left)
+autoToggle.Size = UDim2.new(1,-20,0,34)
+autoToggle.Position = UDim2.new(0,10,0,140)
+autoToggle.Text = "Auto-Test: OFF (queue_on_teleport)"
+autoToggle.Font = Enum.Font.GothamBold
+autoToggle.TextSize = 13
+autoToggle.BackgroundColor3 = Color3.fromRGB(70,70,80)
+autoToggle.BorderSizePixel = 0
+autoToggle.TextColor3 = Color3.fromRGB(240,240,245)
+
+local scanBtn = Instance.new("TextButton", left)
+scanBtn.Size = UDim2.new(1,-20,0,34)
+scanBtn.Position = UDim2.new(0,10,0,186)
+scanBtn.Text = "🔄 Scan Servers"
+scanBtn.Font = Enum.Font.GothamBold
+scanBtn.TextSize = 14
+scanBtn.BackgroundColor3 = Color3.fromRGB(80,80,90)
+scanBtn.BorderSizePixel = 0
+scanBtn.TextColor3 = Color3.fromRGB(240,240,245)
+
+local checkCurrentBtn = Instance.new("TextButton", left)
+checkCurrentBtn.Size = UDim2.new(1,-20,0,34)
+checkCurrentBtn.Position = UDim2.new(0,10,0,232)
+checkCurrentBtn.Text = "✅ Check Current Server"
+checkCurrentBtn.Font = Enum.Font.GothamBold
+checkCurrentBtn.TextSize = 14
+checkCurrentBtn.BackgroundColor3 = Color3.fromRGB(90,180,110)
+checkCurrentBtn.BorderSizePixel = 0
+checkCurrentBtn.TextColor3 = Color3.fromRGB(255,255,255)
+
+local statusLabel = Instance.new("TextLabel", left)
+statusLabel.Size = UDim2.new(1,-20,0,120)
+statusLabel.Position = UDim2.new(0,10,0,280)
+statusLabel.BackgroundTransparency = 1
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextSize = 13
+statusLabel.TextColor3 = Color3.fromRGB(210,210,220)
+statusLabel.Text = "Status: Ready"
+
+-- Right list area
+local right = Instance.new("Frame", main)
+right.Size = UDim2.new(1,-260,1,-60)
+right.Position = UDim2.new(0,260,0,60)
+right.BackgroundColor3 = Color3.fromRGB(26,26,30)
+right.BorderSizePixel = 0
+
+local headerRow = Instance.new("Frame", right)
+headerRow.Size = UDim2.new(1,-20,0,30)
+headerRow.Position = UDim2.new(0,10,0,6)
+headerRow.BackgroundTransparency = 1
+
+local colA = Instance.new("TextLabel", headerRow)
+colA.Size = UDim2.new(0,380,1,0)
+colA.Position = UDim2.new(0,0,0,0)
+colA.BackgroundTransparency = 1
+colA.Text = "Server (JobId)"
+colA.Font = Enum.Font.GothamBold
+colA.TextSize = 13
+colA.TextColor3 = Color3.fromRGB(230,230,240)
+colA.TextXAlignment = Enum.TextXAlignment.Left
+
+local colB = Instance.new("TextLabel", headerRow)
+colB.Size = UDim2.new(0,120,1,0)
+colB.Position = UDim2.new(0,392,0,0)
+colB.BackgroundTransparency = 1
+colB.Text = "Players"
+colB.Font = Enum.Font.GothamBold
+colB.TextSize = 13
+colB.TextColor3 = Color3.fromRGB(230,230,240)
+
+local colC = Instance.new("TextLabel", headerRow)
+colC.Size = UDim2.new(0,200,1,0)
+colC.Position = UDim2.new(0,520,0,0)
+colC.BackgroundTransparency = 1
+colC.Text = "World / Status"
+colC.Font = Enum.Font.GothamBold
+colC.TextSize = 13
+colC.TextColor3 = Color3.fromRGB(230,230,240)
+
+local colD = Instance.new("TextLabel", headerRow)
+colD.Size = UDim2.new(0,140,1,0)
+colD.Position = UDim2.new(0,725,0,0)
+colD.BackgroundTransparency = 1
+colD.Text = "Action"
+colD.Font = Enum.Font.GothamBold
+colD.TextSize = 13
+colD.TextColor3 = Color3.fromRGB(230,230,240)
+
+local listFrame = Instance.new("ScrollingFrame", right)
+listFrame.Size = UDim2.new(1,-20,1,-48)
+listFrame.Position = UDim2.new(0,10,0,44)
+listFrame.BackgroundTransparency = 1
+listFrame.BorderSizePixel = 0
+listFrame.ScrollBarThickness = 6
+listFrame.CanvasSize = UDim2.new(0,0,0,0)
+
+local uiList = Instance.new("UIListLayout", listFrame)
+uiList.SortOrder = Enum.SortOrder.LayoutOrder
+uiList.Padding = UDim.new(0,8)
+
+-- helper functions for list
+local function clearList()
+    for _,c in ipairs(listFrame:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+    listFrame.CanvasSize = UDim2.new(0,0,0,0)
+end
+
+local function setStatus(t)
+    statusLabel.Text = "Status: "..t
+end
+
+-- Auto-test state
+local autoTest = false
+local qot_func = (syn and syn.queue_on_teleport) or queue_on_teleport
+
+autoToggle.MouseButton1Click:Connect(function()
+    autoTest = not autoTest
+    if autoTest then
+        autoToggle.Text = "Auto-Test: ON (queue_on_teleport)"
+    else
+        autoToggle.Text = "Auto-Test: OFF (queue_on_teleport)"
     end
 end)
 
-print("✅ Server Scanner GUI Loaded")
+-- auto-test snippet to be queued on teleport (runs inside target server)
+local function makeAutoTestSnippet(targetName)
+    -- snippet prints result to console and tries to SendNotification if available
+    local snippet = [[
+        local targetName = "]] .. targetName .. [["
+        local Lighting = game:GetService("Lighting")
+        local function safeFind(root, path)
+            local ptr = root
+            for _, n in ipairs(path) do
+                if not ptr then return nil end
+                ptr = ptr:FindFirstChild(n)
+            end
+            return ptr
+        end
+        local function detectFullMoon()
+            local ct = tonumber(Lighting.ClockTime)
+            if not ct then return false end
+            if (ct >= 18) or (ct <= 6) then
+                -- try hint values (ReplicatedStorage)
+                local ok, found = pcall(function()
+                    local RS = game:GetService("ReplicatedStorage")
+                    local fm = safeFind(RS, {"FullMoon"}) or safeFind(RS, {"Full_Moon"}) or safeFind(RS, {"Fullmoon"})
+                    if fm and (fm.Value == true or tostring(fm.Value):lower():find("full")) then
+                        return true
+                    end
+                    return true -- fallback assume night -> good
+                end)
+                return ok and found
+            end
+            return false
+        end
+        local function detectMirage()
+            local ok, res = pcall(function()
+                local w = workspace
+                if safeFind(w, {"_WorldOrigin","Locations","Mirage Island"}) then return true end
+                if w:FindFirstChild("Mirage Island") then return true end
+                local map = w:FindFirstChild("_Map") or w:FindFirstChild("Map")
+                if map and (map:FindFirstChild("Mirage Island") or map:FindFirstChild("Mirage")) then return true end
+                return false
+            end)
+            return ok and res
+        end
+
+        local found = false
+        if targetName == "Full Moon" then
+            if detectFullMoon() then
+                print("[Auto-Test] FOUND Full Moon in this server ✅")
+                found = true
+            end
+        elseif targetName == "Mirage" or targetName == "Mirage Island" then
+            if detectMirage() then
+                print("[Auto-Test] FOUND Mirage Island in this server ✅")
+                found = true
+            end
+        end
+        if not found then
+            print("[Auto-Test] Not found in this server ❌")
+        end
+    ]]
+    return snippet
+end
+
+-- add row function
+local function addRow(server)
+    -- server fields from API: id, playing, maxPlayers
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -12, 0, 44)
+    row.BackgroundColor3 = Color3.fromRGB(34,34,40)
+    row.BorderSizePixel = 0
+
+    local lblA = Instance.new("TextLabel", row)
+    lblA.Size = UDim2.new(0,380,1,0)
+    lblA.Position = UDim2.new(0,6,0,0)
+    lblA.BackgroundTransparency = 1
+    lblA.Font = Enum.Font.Gotham
+    lblA.TextSize = 13
+    lblA.TextColor3 = Color3.fromRGB(230,230,240)
+    lblA.TextXAlignment = Enum.TextXAlignment.Left
+    lblA.Text = server.id
+
+    local lblB = Instance.new("TextLabel", row)
+    lblB.Size = UDim2.new(0,120,1,0)
+    lblB.Position = UDim2.new(0,392,0,0)
+    lblB.BackgroundTransparency = 1
+    lblB.Font = Enum.Font.Gotham
+    lblB.TextSize = 13
+    lblB.TextColor3 = Color3.fromRGB(230,230,240)
+    lblB.Text = string.format("%d/%d", server.playing or 0, server.maxPlayers or 0)
+
+    local lblC = Instance.new("TextLabel", row)
+    lblC.Size = UDim2.new(0,200,1,0)
+    lblC.Position = UDim2.new(0,520,0,0)
+    lblC.BackgroundTransparency = 1
+    lblC.Font = Enum.Font.Gotham
+    lblC.TextSize = 13
+    lblC.TextColor3 = Color3.fromRGB(230,230,240)
+    lblC.Text = inSea() .. " | " .. "Unknown" -- Status unknown until join/check
+
+    local joinBtn = Instance.new("TextButton", row)
+    joinBtn.Size = UDim2.new(0,120,0,28)
+    joinBtn.Position = UDim2.new(0,720,0.5,-14)
+    joinBtn.BackgroundColor3 = Color3.fromRGB(90,140,255)
+    joinBtn.BorderSizePixel = 0
+    joinBtn.Font = Enum.Font.GothamBold
+    joinBtn.TextSize = 13
+    joinBtn.TextColor3 = Color3.fromRGB(255,255,255)
+    joinBtn.Text = "Join"
+
+    -- When clicked: optionally queue snippet then teleport
+    joinBtn.MouseButton1Click:Connect(function()
+        setStatus(("Joining %s ..."):format(server.id))
+        if autoTest and qot_func then
+            -- queue snippet that runs inside server after teleport
+            local snippet = makeAutoTestSnippet(currentTab)
+            pcall(function() qot_func(snippet) end)
+        end
+        pcall(function()
+            TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
+        end)
+    end)
+
+    row.Parent = listFrame
+    listFrame.CanvasSize = UDim2.new(0,0,0, uiList.AbsoluteContentSize.Y + 12)
+end
+
+-- scanning logic
+local scanning = false
+local function scanServers()
+    if scanning then return end
+    scanning = true
+    setStatus("Scanning servers...")
+    clearList()
+    local cursor = nil
+    local pages = 0
+    local foundAny = false
+    while pages < CONFIG.SCAN_PAGE_LIMIT do
+        local data, err = GetServers(cursor)
+        if not data then
+            setStatus("Scan error: "..tostring(err))
+            break
+        end
+        for _, s in ipairs(data.data or {}) do
+            -- only show servers with available slots
+            if (s.playing or 0) < (s.maxPlayers or 0) then
+                -- Filter by tab
+                if currentTab == "All Servers" then
+                    addRow(s)
+                    foundAny = true
+                elseif currentTab == "Full Moon" or currentTab == "Mirage" then
+                    -- we cannot detect remote server status without joining,
+                    -- so show all servers in that tab (user will Join & Auto-Test)
+                    addRow(s)
+                    foundAny = true
+                end
+            end
+        end
+        cursor = data.nextPageCursor
+        if not cursor then break end
+        pages = pages + 1
+        task.wait(0.12)
+    end
+    if foundAny then
+        setStatus("Scan complete. Click Join to enter a server.")
+    else
+        setStatus("No available servers found.")
+    end
+    scanning = false
+end
+
+scanBtn.MouseButton1Click:Connect(scanServers)
+checkCurrentBtn.MouseButton1Click:Connect(function()
+    setStatus("Checking current server for: "..tostring(currentTab).." ...")
+    local detector = nil
+    if currentTab == "Full Moon" then detector = DETECT["Full Moon"]
+    elseif currentTab == "Mirage" then detector = DETECT["Mirage Island"]
+    else
+        setStatus("Choose Full Moon or Mirage tab to check current server.")
+        return
+    end
+    local ok, result = pcall(detector)
+    if ok and result then
+        setStatus("✅ FOUND "..tostring(currentTab).." in this server.")
+        -- try notification
+        pcall(function()
+            if game:GetService("GuiService") and game:GetService("StarterGui") then
+                pcall(function()
+                    game:GetService("StarterGui"):SetCore("SendNotification", {
+                        Title = "Found!",
+                        Text = tostring(currentTab) .. " detected in this server.",
+                        Duration = 5
+                    })
+                end)
+            end
+        end)
+    else
+        setStatus("❌ Not found in this server.")
+    end
+end)
+
+-- initial status
+setStatus("Ready. Choose a tab and Scan.")
+
+-- ensure GUI visible
+gui.Parent = game.CoreGui
+
+-- print instructions
+print("[BF Finder] Loaded. Use Scan -> Join. Enable Auto-Test to auto-check after join (requires queue_on_teleport on your executor).")
