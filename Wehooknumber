@@ -1,0 +1,105 @@
+-- // Mirage + Full Moon Server Scanner GUI
+-- // By: trg55
+
+-- Services
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- Game ID Blox Fruits
+local placeId = 2753915549 -- First Sea, auto đổi server thì placeId vẫn giữ được
+
+-- // Hàm request API Roblox
+local function GetServers(cursor)
+    local url = "https://games.roblox.com/v1/games/"..placeId.."/servers/Public?sortOrder=Asc&limit=100"
+    if cursor then
+        url = url .. "&cursor="..cursor
+    end
+    local response = game:HttpGet(url)
+    return HttpService:JSONDecode(response)
+end
+
+-- // Hàm check server có Mirage / Full Moon không (demo đơn giản)
+local function CheckServer(serverId)
+    -- ở đây mình chỉ demo random vì Mirage/Full Moon thật thì phải check trong game
+    -- bạn có thể thay điều kiện bằng cách dùng RemoteEvent trong Blox Fruits
+    local result = {}
+    if math.random(1,10) == 1 then
+        result.Mirage = true
+    end
+    if math.random(1,8) == 1 then
+        result.FullMoon = true
+    end
+    return result
+end
+
+-- // Tạo GUI bằng Instance (có list + button hop)
+local ScreenGui = Instance.new("ScreenGui", game.CoreGui)
+local Frame = Instance.new("Frame", ScreenGui)
+Frame.Size = UDim2.new(0,400,0,300)
+Frame.Position = UDim2.new(0.5,-200,0.5,-150)
+Frame.BackgroundColor3 = Color3.fromRGB(40,40,40)
+Frame.Active = true
+Frame.Draggable = true
+
+local Title = Instance.new("TextLabel", Frame)
+Title.Size = UDim2.new(1,0,0,40)
+Title.Text = "🔍 Server Scanner"
+Title.BackgroundColor3 = Color3.fromRGB(25,25,25)
+Title.TextColor3 = Color3.fromRGB(255,255,255)
+Title.Font = Enum.Font.SourceSansBold
+Title.TextSize = 20
+
+local Scroll = Instance.new("ScrollingFrame", Frame)
+Scroll.Position = UDim2.new(0,0,0,40)
+Scroll.Size = UDim2.new(1,0,1,-80)
+Scroll.CanvasSize = UDim2.new(0,0,0,0)
+Scroll.ScrollBarThickness = 6
+Scroll.BackgroundColor3 = Color3.fromRGB(50,50,50)
+
+local ScanButton = Instance.new("TextButton", Frame)
+ScanButton.Size = UDim2.new(1,0,0,40)
+ScanButton.Position = UDim2.new(0,0,1,-40)
+ScanButton.Text = "🔄 Scan Server"
+ScanButton.BackgroundColor3 = Color3.fromRGB(70,70,70)
+ScanButton.TextColor3 = Color3.fromRGB(255,255,255)
+ScanButton.Font = Enum.Font.SourceSansBold
+ScanButton.TextSize = 18
+
+-- // Thêm kết quả vào list
+local function AddResult(serverId, result)
+    local Btn = Instance.new("TextButton", Scroll)
+    Btn.Size = UDim2.new(1, -10, 0, 30)
+    Btn.Position = UDim2.new(0,5,0, #Scroll:GetChildren()*35)
+    Btn.TextXAlignment = Enum.TextXAlignment.Left
+    Btn.TextColor3 = Color3.fromRGB(255,255,255)
+    Btn.BackgroundColor3 = Color3.fromRGB(60,60,60)
+
+    local status = ""
+    if result.Mirage then status = status .. " 🌌Mirage" end
+    if result.FullMoon then status = status .. " 🌕FullMoon" end
+    if status == "" then status = "❌ None" end
+
+    Btn.Text = serverId.." | "..status
+
+    Btn.MouseButton1Click:Connect(function()
+        TeleportService:TeleportToPlaceInstance(placeId, serverId, LocalPlayer)
+    end)
+
+    Scroll.CanvasSize = UDim2.new(0,0,0, #Scroll:GetChildren()*35)
+end
+
+-- // Khi nhấn Scan
+ScanButton.MouseButton1Click:Connect(function()
+    Scroll:ClearAllChildren()
+    local data = GetServers()
+    for _,server in pairs(data.data) do
+        if server.playing < server.maxPlayers then
+            local result = CheckServer(server.id)
+            AddResult(server.id, result)
+        end
+    end
+end)
+
+print("✅ Server Scanner GUI Loaded")
